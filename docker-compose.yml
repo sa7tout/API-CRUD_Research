@@ -1,0 +1,90 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:latest
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: hotel_db
+      POSTGRES_USER: hoteladmin
+      POSTGRES_PASSWORD: admin7
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  pgadmin:
+    image: dpage/pgadmin4
+    ports:
+      - "6060:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@hotel.com
+      PGADMIN_DEFAULT_PASSWORD: admin7
+    depends_on:
+      - postgres
+
+  rest-api:
+    build: ./rest-api
+    ports:
+      - "9080:9080"
+    depends_on:
+      - postgres
+
+  graphql-api:
+    build: ./graphql-api
+    ports:
+      - "9081:9081"
+    depends_on:
+      - postgres
+
+  soap-api:
+    build: ./soap-api
+    ports:
+      - "9082:9082"
+    depends_on:
+      - postgres
+
+  grpc-api:
+    build: ./grpc-api
+    ports:
+      - "9083:9083"
+      - "9093:9093"
+    depends_on:
+      - postgres
+
+  test-utils:
+    build: ./test-utils
+    depends_on:
+      - postgres
+    volumes:
+      - ./test-utils:/app
+
+  prometheus:
+    image: prom/prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus:/etc/prometheus
+    depends_on:
+      - rest-api
+      - graphql-api
+      - soap-api
+      - grpc-api
+
+  grafana:
+    image: grafana/grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+    depends_on:
+      - prometheus
+
+networks:
+  default:
+    name: hotel-network
+
+volumes:
+  postgres_data:
