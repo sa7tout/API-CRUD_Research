@@ -1,27 +1,71 @@
 package com.hotel.test.utils;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.prometheus.PrometheusConfig;
+import io.micrometer.prometheus.PrometheusMeterRegistry;
+import org.apache.jmeter.config.Arguments;
 import org.apache.jmeter.samplers.SampleResult;
-import org.apache.jmeter.visualizers.backend.AbstractBackendListenerClient;
+import org.apache.jmeter.visualizers.backend.BackendListenerClient;
 import org.apache.jmeter.visualizers.backend.BackendListenerContext;
+import io.micrometer.core.instrument.Timer;
 import java.io.File;
 import java.time.LocalDateTime;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
-public class ResultsCollector extends AbstractBackendListenerClient {
+public class ResultsCollector implements BackendListenerClient {
+
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final Map<String, List<TestResult>> results = new ConcurrentHashMap<>();
     private final Map<String, MetricAggregator> aggregators = new ConcurrentHashMap<>();
+    private final PrometheusMeterRegistry meterRegistry;
+
+    public ResultsCollector() {
+        this.meterRegistry = new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
+    }
+
+    @Override
+    public void setupTest(BackendListenerContext context) {
+        // Initialize test setup if needed
+    }
 
     @Override
     public void handleSampleResults(List<SampleResult> sampleResults, BackendListenerContext context) {
         sampleResults.forEach(this::processSampleResult);
     }
 
+    public void handleSampleResult(BackendListenerContext context, SampleResult sampleResult) {
+        processSampleResult(sampleResult);
+    }
+
+    @Override
+    public void teardownTest(BackendListenerContext context) {
+        generateReport();
+    }
+
+    @Override
+    public Arguments getDefaultParameters() {
+        return new Arguments();
+    }
+
     private void processSampleResult(SampleResult result) {
         String api = result.getSampleLabel().split("-")[0];
         MetricAggregator aggregator = aggregators.computeIfAbsent(api, k -> new MetricAggregator());
+
+        Timer.builder("api.request.latency")
+                .tag("api", api)
+                .register(meterRegistry)
+                .record(result.getTime(), TimeUnit.MILLISECONDS);
+
+        meterRegistry.gauge("api.throughput", Collections.singletonList(io.micrometer.core.instrument.Tag.of("api", api)),
+                1.0 / (result.getTime() / 1000.0));
+
+        meterRegistry.gauge("api.cpu.usage", Collections.singletonList(io.micrometer.core.instrument.Tag.of("api", api)),
+                result.getLatency() / 1000.0);
+
+        meterRegistry.gauge("api.memory.usage", Collections.singletonList(io.micrometer.core.instrument.Tag.of("api", api)),
+                result.getBytes());
 
         aggregator.addLatency(result.getTime());
         aggregator.addThroughput(1.0 / (result.getTime() / 1000.0));
@@ -43,7 +87,7 @@ public class ResultsCollector extends AbstractBackendListenerClient {
                 .add(testResult);
     }
 
-    public void generateReport() {
+    private void generateReport() {
         try {
             TestReport report = new TestReport();
             report.setResults(results);
@@ -52,52 +96,5 @@ public class ResultsCollector extends AbstractBackendListenerClient {
         } catch (Exception e) {
             throw new RuntimeException("Failed to generate report", e);
         }
-    }
-}
-
-class MetricAggregator {
-    private final Queue<Double> latencies = new LinkedList<>();
-    private final Queue<Double> throughputs = new LinkedList<>();
-    private final Queue<Double> cpuUsages = new LinkedList<>();
-    private final Queue<Double> memoryUsages = new LinkedList<>();
-    private static final int WINDOW_SIZE = 100;
-
-    void addLatency(double value) {
-        addMetric(latencies, value);
-    }
-
-    void addThroughput(double value) {
-        addMetric(throughputs, value);
-    }
-
-    void addCpuUsage(double value) {
-        addMetric(cpuUsages, value);
-    }
-
-    void addMemoryUsage(double value) {
-        addMetric(memoryUsages, value);
-    }
-
-    private void addMetric(Queue<Double> queue, double value) {
-        queue.offer(value);
-        if (queue.size() > WINDOW_SIZE) {
-            queue.poll();
-        }
-    }
-
-    double getCurrentLatency() {
-        return latencies.stream().mapToDouble(Double::doubleValue).average().orElse(0.0);
-    }
-
-    double getCurrentThroughput() {
-        return throughputs.stream().mapToDouble(Double::doubleValue).average().orElse(0.0);
-    }
-
-    double getCurrentCpuUsage() {
-        return cpuUsages.stream().mapToDouble(Double::doubleValue).average().orElse(0.0);
-    }
-
-    double getCurrentMemoryUsage() {
-        return memoryUsages.stream().mapToDouble(Double::doubleValue).average().orElse(0.0);
     }
 }
